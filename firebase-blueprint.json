@@ -1,0 +1,39 @@
+{
+  "entities": {
+    "Incident": {
+      "title": "Incident",
+      "description": "A recorded emergency incident and its AI-generated protocol.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "The UID of the user who created the incident."
+        },
+        "input": {
+          "type": "string",
+          "description": "The original user input describing the emergency."
+        },
+        "response": {
+          "type": "object",
+          "description": "The AI-generated emergency response protocol."
+        },
+        "location": {
+          "type": "object",
+          "description": "User's coordinates at the time of incident."
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the incident was recorded."
+        }
+      },
+      "required": ["uid", "input", "response", "timestamp"]
+    }
+  },
+  "firestore": {
+    "incidents": {
+      "schema": "Incident",
+      "description": "Collection of emergency incidents."
+    }
+  }
+}
