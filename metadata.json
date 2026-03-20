@@ -1,0 +1,5 @@
+{
+  "name": "Emergency Response Assistant",
+  "description": "AI-powered assistant that converts messy real-world emergency descriptions into structured, life-saving actions.",
+  "requestFramePermissions": []
+}
