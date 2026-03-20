@@ -1,12 +1,13 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, memo } from 'react';
 import { AdvancedMarker, Pin, InfoWindow, useMap, useMapsLibrary, useAdvancedMarkerRef } from '@vis.gl/react-google-maps';
 import { Navigation, MapPin } from 'lucide-react';
+import { IncidentRecord } from '../types';
 
 // Route Display Component
-export function RouteDisplay({ origin, destination }: { 
+export const RouteDisplay = memo(({ origin, destination }: { 
   origin: google.maps.LatLngLiteral; 
   destination: google.maps.LatLngLiteral;
-}) {
+}) => {
   const map = useMap();
   const routesLib = useMapsLibrary('routes');
   const polylinesRef = useRef<google.maps.Polyline[]>([]);
@@ -35,15 +36,15 @@ export function RouteDisplay({ origin, destination }: {
   }, [routesLib, map, origin, destination]);
 
   return null;
-}
+});
 
 // Marker with InfoWindow Component
-export function MarkerWithInfoWindow({ place, userLocation, onGetDirections }: { 
+export const MarkerWithInfoWindow = memo(({ place, userLocation, onGetDirections }: { 
   place: any; 
   userLocation: google.maps.LatLngLiteral;
   onGetDirections: (dest: google.maps.LatLngLiteral) => void;
   key?: any;
-}) {
+}) => {
   const [markerRef, marker] = useAdvancedMarkerRef();
   const [open, setOpen] = useState(false);
 
@@ -76,10 +77,10 @@ export function MarkerWithInfoWindow({ place, userLocation, onGetDirections }: {
       )}
     </>
   );
-}
+});
 
 // Nearby Facilities Component
-export function NearbyFacilities({ query, userLocation }: { query: string; userLocation: google.maps.LatLngLiteral }) {
+export const NearbyFacilities = memo(({ query, userLocation }: { query: string; userLocation: google.maps.LatLngLiteral }) => {
   const map = useMap();
   const placesLib = useMapsLibrary('places');
   const [places, setPlaces] = useState<google.maps.places.Place[]>([]);
@@ -114,4 +115,4 @@ export function NearbyFacilities({ query, userLocation }: { query: string; userL
       {destination && <RouteDisplay origin={userLocation} destination={destination} />}
     </>
   );
-}
+});

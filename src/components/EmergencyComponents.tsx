@@ -1,36 +1,20 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   AlertCircle, ShieldAlert, Zap, Info, CheckCircle2, 
   Activity, Siren, MapPin, Clock, ChevronRight, History 
 } from 'lucide-react';
+import { EmergencyResponse, IncidentRecord, RiskLevel } from '../types';
 
-interface EmergencyResponse {
-  type: string;
-  riskLevel: 'Low' | 'Medium' | 'High';
-  actions: string[];
-  precautions: string[];
-  summary: string;
-  searchQuery?: string;
-}
-
-interface IncidentRecord {
-  id: string;
-  input: string;
-  response: EmergencyResponse;
-  location?: any;
-  timestamp: any;
-}
-
-const getRiskStyles = (level: string) => {
+const getRiskStyles = (level: RiskLevel) => {
   switch (level) {
-    case 'High': return 'bg-red-500/20 text-red-400 border-red-500/30';
-    case 'Medium': return 'bg-amber-500/20 text-amber-400 border-amber-500/30';
+    case RiskLevel.HIGH: return 'bg-red-500/20 text-red-400 border-red-500/30';
+    case RiskLevel.MEDIUM: return 'bg-amber-500/20 text-amber-400 border-amber-500/30';
     default: return 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30';
   }
 };
 
-export const EmergencyResponseView = ({ response }: { response: EmergencyResponse }) => {
+export const EmergencyResponseView = memo(({ response }: { response: EmergencyResponse }) => {
   return (
     <div className="space-y-8">
       {/* Risk Banner */}
@@ -109,9 +93,9 @@ export const EmergencyResponseView = ({ response }: { response: EmergencyRespons
       </div>
     </div>
   );
-};
+});
 
-export const IncidentHistory = ({ 
+export const IncidentHistory = memo(({ 
   history, 
   onSelect 
 }: { 
@@ -157,4 +141,5 @@ export const IncidentHistory = ({
       </div>
     </div>
   );
-};
+});
+

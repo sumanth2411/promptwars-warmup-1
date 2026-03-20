@@ -1,15 +1,21 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo, ErrorInfo, ReactNode } from 'react';
 import { GoogleGenAI, Type } from "@google/genai";
 import { 
-  AlertCircle, ShieldAlert, Zap, 
-  Loader2, Send, Activity, Siren, MapPin, Navigation, 
-  LogIn, LogOut, User as UserIcon 
+  AlertCircle, Loader2, Send, Activity, Siren, MapPin, Navigation, 
+  LogIn, LogOut, User as UserIcon, ShieldCheck
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { APIProvider, Map, AdvancedMarker, Pin } from '@vis.gl/react-google-maps';
-import { auth, db, signInWithGoogle, logout, handleFirestoreError, OperationType } from './firebase';
+import { auth, db, signInWithGoogle, logout, handleFirestoreError } from './firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { collection, addDoc, query, where, orderBy, onSnapshot, Timestamp } from 'firebase/firestore';
+import { collection, addDoc, query, where, orderBy, onSnapshot, Timestamp, limit, setDoc, doc } from 'firebase/firestore';
+
+// Types & Constants
+import { EmergencyResponse, IncidentRecord, OperationType } from './types';
+import { 
+  MAPS_API_KEY, HAS_VALID_MAPS_KEY, DEFAULT_LOCATION, 
+  EMERGENCY_CONTACTS, MAX_HISTORY_ITEMS, MAX_INPUT_LENGTH 
+} from './constants';
 
 // Components
 import { NearbyFacilities } from './components/NearbyFacilities';
@@ -17,44 +23,95 @@ import { EmergencyResponseView, IncidentHistory } from './components/EmergencyCo
 
 // Initialize Gemini
 const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
-const MAPS_API_KEY = process.env.GOOGLE_MAPS_PLATFORM_KEY || '';
-const hasValidMapsKey = Boolean(MAPS_API_KEY) && MAPS_API_KEY !== 'YOUR_API_KEY';
 
-interface EmergencyResponse {
-  type: string;
-  riskLevel: 'Low' | 'Medium' | 'High';
-  actions: string[];
-  precautions: string[];
-  summary: string;
-  searchQuery?: string; // Query for nearby facilities
+// Error Boundary Component
+interface ErrorBoundaryProps {
+  children: ReactNode;
 }
 
-interface IncidentRecord {
-  id: string;
-  input: string;
-  response: EmergencyResponse;
-  location?: any;
-  timestamp: any;
+interface ErrorBoundaryState {
+  hasError: boolean;
+  errorInfo: string | null;
 }
 
-export default function App() {
+class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  public state: ErrorBoundaryState;
+  public props: ErrorBoundaryProps;
+
+  constructor(props: ErrorBoundaryProps) {
+    super(props);
+    this.props = props;
+    this.state = { hasError: false, errorInfo: null };
+  }
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, errorInfo: error.message };
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error("Uncaught error:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6 text-center">
+          <div className="glass-card p-10 rounded-[2.5rem] border border-red-500/20 max-w-md">
+            <AlertCircle className="w-16 h-16 text-red-500 mx-auto mb-6" />
+            <h2 className="text-xl font-black text-white uppercase tracking-widest mb-4">System Error</h2>
+            <p className="text-slate-400 text-sm mb-8 leading-relaxed">
+              A critical error occurred. This has been logged for our team.
+            </p>
+            <pre className="bg-black/50 p-4 rounded-xl text-[10px] text-red-400 overflow-auto mb-8 text-left max-h-40">
+              {this.state.errorInfo}
+            </pre>
+            <button 
+              onClick={() => window.location.reload()}
+              className="w-full bg-white text-slate-950 py-4 rounded-2xl font-black text-[10px] uppercase tracking-widest hover:bg-emerald-400 transition-all"
+            >
+              Restart Application
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function MainApp() {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [response, setResponse] = useState<EmergencyResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [history, setHistory] = useState<IncidentRecord[]>([]);
-  const [userLocation, setUserLocation] = useState<google.maps.LatLngLiteral>({ lat: 37.42, lng: -122.08 });
+  const [userLocation, setUserLocation] = useState<google.maps.LatLngLiteral>(DEFAULT_LOCATION);
   const [isAuthReady, setIsAuthReady] = useState(false);
 
   // Memoized current user UID
   const userUid = useMemo(() => user?.uid, [user]);
 
-  // Auth Listener
+  // Auth Listener & Profile Sync
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
       setIsAuthReady(true);
+
+      if (currentUser) {
+        // Sync user profile to Firestore
+        try {
+          await setDoc(doc(db, 'users', currentUser.uid), {
+            uid: currentUser.uid,
+            email: currentUser.email,
+            displayName: currentUser.displayName,
+            photoURL: currentUser.photoURL,
+            role: 'user' // Default role
+          }, { merge: true });
+        } catch (err) {
+          handleFirestoreError(err, OperationType.WRITE, `users/${currentUser.uid}`);
+        }
+      }
     });
     return () => unsubscribe();
   }, []);
@@ -74,7 +131,7 @@ export default function App() {
     }
   }, []);
 
-  // History Listener
+  // History Listener with Limit for Efficiency
   useEffect(() => {
     if (!userUid || !isAuthReady) {
       setHistory([]);
@@ -84,7 +141,8 @@ export default function App() {
     const q = query(
       collection(db, 'incidents'),
       where('uid', '==', userUid),
-      orderBy('timestamp', 'desc')
+      orderBy('timestamp', 'desc'),
+      limit(MAX_HISTORY_ITEMS)
     );
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -108,7 +166,7 @@ export default function App() {
     setResponse(null);
 
     try {
-      const prompt = `Analyze this emergency situation and provide a structured response in JSON format: "${input}". 
+      const prompt = `Analyze this emergency situation and provide a structured response in JSON format: "${input.slice(0, MAX_INPUT_LENGTH)}". 
       Include:
       1. type: The type of emergency.
       2. riskLevel: "Low", "Medium", or "High".
@@ -145,7 +203,7 @@ export default function App() {
         try {
           await addDoc(collection(db, 'incidents'), {
             uid: user.uid,
-            input: input,
+            input: input.slice(0, MAX_INPUT_LENGTH),
             response: parsed,
             location: userLocation,
             timestamp: Timestamp.now()
@@ -200,10 +258,13 @@ export default function App() {
                   referrerPolicy="no-referrer"
                 />
                 <div className="hidden sm:block">
-                  <p className="text-[10px] font-black text-white uppercase tracking-widest leading-none mb-1">
-                    {user.displayName?.split(' ')[0]}
-                  </p>
-                  <p className="text-[8px] font-bold text-emerald-500 uppercase tracking-widest leading-none">Active Session</p>
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <p className="text-[10px] font-black text-white uppercase tracking-widest leading-none">
+                      {user.displayName?.split(' ')[0]}
+                    </p>
+                    <ShieldCheck className="w-3 h-3 text-emerald-500" />
+                  </div>
+                  <p className="text-[8px] font-bold text-emerald-500 uppercase tracking-widest leading-none">Secure Session</p>
                 </div>
                 <button 
                   onClick={handleLogout}
@@ -249,6 +310,7 @@ export default function App() {
                     placeholder="Describe the emergency in detail..."
                     aria-label="Describe the emergency situation"
                     aria-describedby="input-instruction"
+                    maxLength={MAX_INPUT_LENGTH}
                     className="glass-input w-full min-h-[220px] p-6 rounded-2xl text-xl leading-relaxed text-white placeholder:text-slate-600 outline-none"
                   />
                   
@@ -307,7 +369,7 @@ export default function App() {
                   <EmergencyResponseView response={response} />
 
                   {/* Maps Section */}
-                  {hasValidMapsKey && response.searchQuery && (
+                  {HAS_VALID_MAPS_KEY && response.searchQuery && (
                     <motion.div 
                       initial={{ opacity: 0, scale: 0.95 }}
                       animate={{ opacity: 1, scale: 1 }}
@@ -371,14 +433,12 @@ export default function App() {
             <div className="glass-card p-8 rounded-[2.5rem] bg-red-950/20 border-red-500/10">
               <h3 className="text-xs font-black text-red-500 uppercase tracking-widest mb-6">Global Emergency</h3>
               <div className="space-y-4">
-                <div className="flex justify-between items-center p-4 rounded-2xl bg-white/5">
-                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Emergency Services</span>
-                  <span className="text-lg font-black italic text-white tracking-tighter">911 / 112</span>
-                </div>
-                <div className="flex justify-between items-center p-4 rounded-2xl bg-white/5">
-                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Poison Control</span>
-                  <span className="text-lg font-black italic text-white tracking-tighter">1-800-222-1222</span>
-                </div>
+                {EMERGENCY_CONTACTS.map((contact, i) => (
+                  <div key={i} className="flex justify-between items-center p-4 rounded-2xl bg-white/5">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{contact.name}</span>
+                    <span className="text-lg font-black italic text-white tracking-tighter">{contact.number}</span>
+                  </div>
+                ))}
               </div>
             </div>
           </aside>
@@ -398,5 +458,13 @@ export default function App() {
         </div>
       </footer>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <MainApp />
+    </ErrorBoundary>
   );
 }

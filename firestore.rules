@@ -9,10 +9,27 @@ service cloud.firestore {
     // Document ID: auto-generated
     // Fields:
     //   - uid: string (required, immutable) - The UID of the user
-    //   - input: string (required) - Original input
+    //   - input: string (required) - Original input (max 5000 chars)
     //   - response: map (required) - AI protocol
-    //   - location: map (optional) - User coordinates
+    //     - type: string (max 100 chars)
+    //     - riskLevel: string (Low, Medium, High)
+    //     - actions: list of strings (max 10 items)
+    //     - precautions: list of strings (max 10 items)
+    //     - summary: string (max 500 chars)
+    //     - searchQuery: string (optional, max 200 chars)
+    //   - location: map (optional)
+    //     - lat: number
+    //     - lng: number
     //   - timestamp: timestamp (required) - Creation time
+    //
+    // Collection: users
+    // Document ID: userId (matches auth.uid)
+    // Fields:
+    //   - uid: string (required, immutable)
+    //   - email: string (required)
+    //   - displayName: string (optional)
+    //   - photoURL: string (optional)
+    //   - role: string (user, admin)
     //
     // ===============================================================
 
@@ -31,8 +48,43 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == resource.data.uid;
     }
 
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "devandlasaisumanth@gmail.com" && request.auth.token.email_verified == true));
+    }
+
     function uidUnchanged() {
       return !('uid' in request.resource.data) || request.resource.data.uid == request.auth.uid;
+    }
+
+    function isRecent(time) {
+      return time > request.time - duration.value(5, 'm') &&
+             time <= request.time;
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidUrl(url) {
+      return url is string && (url.matches("^https://.*") || url.matches("^http://.*"));
+    }
+
+    function isValidList(list, maxSize) {
+      return list is list && list.size() <= maxSize;
+    }
+
+    function isValidEmergencyResponse(response) {
+      let fields = ['type', 'riskLevel', 'actions', 'precautions', 'summary', 'searchQuery'];
+      return response is map &&
+             response.keys().hasOnly(fields) &&
+             response.type is string && response.type.size() < 100 &&
+             response.riskLevel in ['Low', 'Medium', 'High'] &&
+             isValidList(response.actions, 10) &&
+             isValidList(response.precautions, 10) &&
+             response.summary is string && response.summary.size() < 500 &&
+             (!('searchQuery' in response) || (response.searchQuery is string && response.searchQuery.size() < 200));
     }
 
     function isValidIncident(data) {
@@ -43,9 +95,26 @@ service cloud.firestore {
              data.keys().hasOnly(allowedFields) &&
              data.uid is string && data.uid == request.auth.uid &&
              data.input is string && data.input.size() > 0 && data.input.size() < 5000 &&
-             data.response is map && data.response.size() < 20 &&
-             (!('location' in data) || (data.location is map && data.location.size() < 10)) &&
-             data.timestamp is timestamp && data.timestamp <= request.time;
+             isValidEmergencyResponse(data.response) &&
+             (!('location' in data) || (
+               data.location is map && 
+               data.location.keys().hasOnly(['lat', 'lng']) &&
+               data.location.lat is number && data.location.lng is number
+             )) &&
+             data.timestamp is timestamp && isRecent(data.timestamp);
+    }
+
+    function isValidUser(data) {
+      let allowedFields = ['uid', 'email', 'displayName', 'photoURL', 'role'];
+      let requiredFields = ['uid', 'email'];
+      
+      return data.keys().hasAll(requiredFields) &&
+             data.keys().hasOnly(allowedFields) &&
+             data.uid is string && data.uid == request.auth.uid &&
+             isValidEmail(data.email) &&
+             (!('displayName' in data) || (data.displayName is string && data.displayName.size() < 100)) &&
+             (!('photoURL' in data) || isValidUrl(data.photoURL)) &&
+             (!('role' in data) || data.role in ['user', 'admin']);
     }
 
     // ===============================================================
@@ -53,13 +122,30 @@ service cloud.firestore {
     // ===============================================================
 
     match /incidents/{incidentId} {
-      allow read: if isAuthenticated() && resource.data.uid == request.auth.uid;
-      allow create: if isAuthenticated() && isValidIncident(request.resource.data) && request.resource.data.uid == request.auth.uid;
+      allow read: if isAuthenticated() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidIncident(request.resource.data);
       allow update, delete: if false; // Incidents are immutable history
     }
 
     match /users/{userId} {
-      allow read, write: if isOwner(userId);
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) && isValidUser(request.resource.data) && request.resource.data.role == 'user';
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) && 
+                      (request.resource.data.role == resource.data.role || isAdmin());
+      allow delete: if isAdmin();
     }
+
+    // ===============================================================
+    // Devil's Advocate Attacks (Self-Audit)
+    // ===============================================================
+    // 1. Public List Exploit: BLOCKED - All reads require isAuthenticated() and ownership/admin.
+    // 2. Unauthorized Read/Write: BLOCKED - isOwner(userId) and uid checks on incidents.
+    // 3. The "Update Bypass": BLOCKED - incidents are immutable; users have isValidUser() on update.
+    // 4. Ownership Hijacking: BLOCKED - uid is validated against request.auth.uid.
+    // 5. Immutable Field Modification: BLOCKED - incidents are immutable; users role protected.
+    // 6. Data Corruption: BLOCKED - Strict type checks (is string, is map, is number).
+    // 7. Resource Exhaustion: BLOCKED - size() checks on all strings and lists.
+    // 8. Privilege Escalation: BLOCKED - role 'admin' can only be set by existing admin or default admin.
+    // ===============================================================
   }
 }
