@@ -36,13 +36,16 @@ service cloud.firestore {
     }
 
     function isValidIncident(data) {
-      return data.keys().hasAll(['uid', 'input', 'response', 'timestamp']) &&
-             data.keys().hasOnly(['uid', 'input', 'response', 'timestamp', 'location']) &&
-             data.uid is string &&
-             data.input is string && data.input.size() < 5000 &&
-             data.response is map &&
-             (!('location' in data) || data.location is map) &&
-             data.timestamp is timestamp;
+      let allowedFields = ['uid', 'input', 'response', 'timestamp', 'location'];
+      let requiredFields = ['uid', 'input', 'response', 'timestamp'];
+      
+      return data.keys().hasAll(requiredFields) &&
+             data.keys().hasOnly(allowedFields) &&
+             data.uid is string && data.uid == request.auth.uid &&
+             data.input is string && data.input.size() > 0 && data.input.size() < 5000 &&
+             data.response is map && data.response.size() < 20 &&
+             (!('location' in data) || (data.location is map && data.location.size() < 10)) &&
+             data.timestamp is timestamp && data.timestamp <= request.time;
     }
 
     // ===============================================================
