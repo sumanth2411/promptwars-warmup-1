@@ -3,13 +3,16 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { GoogleGenAI } from "@google/genai";
-import { AlertCircle, ShieldAlert, Zap, Info, CheckCircle2, Loader2, Send, Activity, Siren } from 'lucide-react';
+import { AlertCircle, ShieldAlert, Zap, Info, CheckCircle2, Loader2, Send, Activity, Siren, MapPin, Navigation } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { APIProvider, Map, AdvancedMarker, Pin, useMap, useMapsLibrary } from '@vis.gl/react-google-maps';
 
 // Initialize Gemini
 const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+const MAPS_API_KEY = process.env.GOOGLE_MAPS_PLATFORM_KEY || '';
+const hasValidMapsKey = Boolean(MAPS_API_KEY) && MAPS_API_KEY !== 'YOUR_API_KEY';
 
 interface EmergencyResponse {
   type: string;
@@ -17,6 +20,44 @@ interface EmergencyResponse {
   actions: string[];
   precautions: string[];
   summary: string;
+  searchQuery?: string; // Query for nearby facilities
+}
+
+// Nearby Facilities Component
+function NearbyFacilities({ query }: { query: string }) {
+  const map = useMap();
+  const placesLib = useMapsLibrary('places');
+  const [places, setPlaces] = useState<google.maps.places.Place[]>([]);
+
+  useEffect(() => {
+    if (!placesLib || !map || !query) return;
+
+    const center = map.getCenter();
+    if (!center) return;
+
+    placesLib.Place.searchByText({
+      textQuery: query,
+      fields: ['displayName', 'location', 'formattedAddress', 'id'],
+      locationBias: center,
+      maxResultCount: 5,
+    }).then(({ places }) => {
+      setPlaces(places || []);
+    });
+  }, [placesLib, map, query]);
+
+  return (
+    <>
+      {places.map((p) => (
+        <AdvancedMarker 
+          key={p.id} 
+          position={p.location} 
+          title={p.displayName || 'Emergency Facility'}
+        >
+          <Pin background="#ef4444" glyphColor="#fff" borderColor="#991b1b" />
+        </AdvancedMarker>
+      ))}
+    </>
+  );
 }
 
 export default function App() {
@@ -24,8 +65,19 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [response, setResponse] = useState<EmergencyResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
 
-  const analyzeEmergency = async () => {
+  // Get user location for maps
+  useEffect(() => {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+        () => setUserLocation({ lat: 37.42, lng: -122.08 }) // Default to Mountain View
+      );
+    }
+  }, []);
+
+  const analyzeEmergency = useCallback(async () => {
     if (!input.trim()) return;
 
     setLoading(true);
@@ -40,10 +92,11 @@ export default function App() {
         
         INSTRUCTIONS:
         1. Identify possible emergency type.
-        2. Assess risk level (Low / Medium / High).
+        2. Assess risk level (Low | Medium | High).
         3. Provide immediate actions (critical steps only).
         4. Provide precautions (bullet points).
         5. Provide a 1-line summary.
+        6. Suggest a Google Maps search query for the nearest relevant emergency facility (e.g., "nearest hospital", "fire station", "police station").
         
         OUTPUT FORMAT (JSON):
         {
@@ -51,7 +104,8 @@ export default function App() {
           "riskLevel": "Low | Medium | High",
           "actions": ["step 1", "step 2", ...],
           "precautions": ["precaution 1", "precaution 2", ...],
-          "summary": "one line summary"
+          "summary": "one line summary",
+          "searchQuery": "search query string"
         }
       `;
 
@@ -74,7 +128,7 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [input]);
 
   const getRiskStyles = (level: string) => {
     switch (level) {
@@ -93,6 +147,32 @@ export default function App() {
       default: return <AlertCircle className="w-6 h-6" />;
     }
   };
+
+  if (!hasValidMapsKey) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6 font-sans">
+        <div className="glass-card max-w-md w-full p-8 text-center space-y-6 rounded-3xl border border-white/10">
+          <div className="w-16 h-16 bg-red-500/10 rounded-2xl flex items-center justify-center mx-auto border border-red-500/20">
+            <MapPin className="w-8 h-8 text-red-500" aria-hidden="true" />
+          </div>
+          <h2 className="text-2xl font-black text-white uppercase tracking-tight italic">Maps Key Required</h2>
+          <div className="space-y-4 text-sm text-slate-400 leading-relaxed">
+            <p>To enable nearby emergency facility tracking, please provide a Google Maps API Key.</p>
+            <div className="bg-white/5 p-4 rounded-xl text-left space-y-2 border border-white/5">
+              <p className="font-bold text-white text-xs uppercase tracking-widest">Setup Instructions:</p>
+              <ol className="list-decimal list-inside space-y-1 text-[11px]">
+                <li>Open <strong>Settings</strong> (⚙️ gear icon)</li>
+                <li>Select <strong>Secrets</strong></li>
+                <li>Add <code>GOOGLE_MAPS_PLATFORM_KEY</code></li>
+                <li>Paste your key and press Enter</li>
+              </ol>
+            </div>
+          </div>
+          <p className="text-[10px] text-slate-500 italic">The app will rebuild automatically after adding the secret.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-mesh relative overflow-x-hidden selection:bg-red-500/30">
@@ -163,15 +243,17 @@ export default function App() {
                 <Activity className="w-32 h-32 text-white" />
               </div>
               
-              <label className="block text-xs font-black text-slate-400 uppercase tracking-[0.3em] mb-6">
+              <label htmlFor="emergency-input" className="block text-xs font-black text-slate-400 uppercase tracking-[0.3em] mb-6">
                 Incident Description
               </label>
               
               <div className="relative">
                 <textarea
+                  id="emergency-input"
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   placeholder="Describe the emergency in detail..."
+                  aria-label="Describe the emergency situation"
                   className="glass-input w-full min-h-[220px] p-6 rounded-2xl text-xl leading-relaxed text-white placeholder:text-slate-600 outline-none"
                 />
                 
@@ -182,6 +264,8 @@ export default function App() {
                   <button
                     onClick={analyzeEmergency}
                     disabled={loading || !input.trim()}
+                    aria-busy={loading}
+                    aria-label="Analyze emergency situation"
                     className="w-full sm:w-auto bg-red-600 hover:bg-red-500 disabled:bg-slate-800 text-white px-10 py-4 rounded-xl font-black uppercase tracking-widest flex items-center justify-center gap-3 transition-all shadow-xl shadow-red-900/20 active:scale-95"
                   >
                     {loading ? (
@@ -227,7 +311,7 @@ export default function App() {
                   <div className="glass-card rounded-[2rem] overflow-hidden">
                     <div className="bg-white/5 px-8 py-5 border-b border-white/10 flex items-center justify-between">
                       <h3 className="text-white font-black text-xs uppercase tracking-[0.2em] flex items-center gap-3">
-                        <Zap className="w-4 h-4 text-amber-400" />
+                        <Zap className="w-4 h-4 text-amber-400" aria-hidden="true" />
                         Critical Protocols
                       </h3>
                       <div className="px-3 py-1 bg-red-500/20 rounded-full text-[10px] font-bold text-red-400 uppercase tracking-widest border border-red-500/30">
@@ -242,8 +326,9 @@ export default function App() {
                           transition={{ delay: idx * 0.1 }}
                           key={idx} 
                           className="flex gap-6 items-start group"
+                          role="listitem"
                         >
-                          <span className="flex-shrink-0 w-10 h-10 bg-white/5 rounded-2xl flex items-center justify-center text-sm font-black text-slate-400 border border-white/10 group-hover:bg-red-500 group-hover:text-white transition-all duration-500">
+                          <span className="flex-shrink-0 w-10 h-10 bg-white/5 rounded-2xl flex items-center justify-center text-sm font-black text-slate-400 border border-white/10 group-hover:bg-red-500 group-hover:text-white transition-all duration-500" aria-hidden="true">
                             {idx + 1}
                           </span>
                           <p className="text-slate-200 text-lg font-medium leading-relaxed pt-1.5">
@@ -253,6 +338,31 @@ export default function App() {
                       ))}
                     </div>
                   </div>
+
+                  {/* Google Maps Integration */}
+                  {MAPS_API_KEY && userLocation && response.searchQuery && (
+                    <div className="glass-card rounded-[2rem] overflow-hidden h-[400px] relative">
+                      <div className="absolute top-4 left-4 z-10 bg-slate-900/80 backdrop-blur-md px-4 py-2 rounded-xl border border-white/10 flex items-center gap-2">
+                        <Navigation className="w-4 h-4 text-red-500" />
+                        <span className="text-[10px] font-black text-white uppercase tracking-widest">Nearby Facilities</span>
+                      </div>
+                      <APIProvider apiKey={MAPS_API_KEY}>
+                        <Map
+                          defaultCenter={userLocation}
+                          defaultZoom={13}
+                          mapId="EMERGENCY_MAP"
+                          internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
+                          style={{ width: '100%', height: '100%' }}
+                          disableDefaultUI={true}
+                        >
+                          <AdvancedMarker position={userLocation} title="Your Location">
+                            <Pin background="#3b82f6" glyphColor="#fff" borderColor="#1e3a8a" />
+                          </AdvancedMarker>
+                          <NearbyFacilities query={response.searchQuery} />
+                        </Map>
+                      </APIProvider>
+                    </div>
+                  )}
                 </motion.div>
               )}
             </AnimatePresence>
